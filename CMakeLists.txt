@@ -282,8 +282,15 @@ print(torch._C._GLIBCXX_USE_CXX11_ABI,end='');"
 endif()
 
 if (BUILD_MULTI_GPU)
-  list(APPEND COMMON_HEADER_DIRS ${MPI_INCLUDE_PATH})
-  list(APPEND COMMON_LIB_DIRS /usr/local/mpi/lib)
+#   list(APPEND COMMON_HEADER_DIRS ${MPI_INCLUDE_PATH})
+  list(APPEND COMMON_HEADER_DIRS ${MPI_CXX_INCLUDE_PATH})  
+  list(APPEND COMMON_HEADER_DIRS ${NCCL_INCLUDE_DIRS})
+  list(APPEND COMMON_HEADER_DIRS ${CUDNN_INCLUDE_PATH})
+  list(APPEND COMMON_LIB_DIRS $ENV{MPI_HOME}/lib)
+#   list(APPEND COMMON_HEADER_DIRS /N/soft/sles15/nvidia/21.5/Linux_x86_64/21.5/comm_libs/nccl/include)
+#   list(APPEND COMMON_HEADER_DIRS /N/u/czh5/BigRed200/seq/cudnn-linux-x86_64-8.9.2.26_cuda11-archive/include)
+#   list(APPEND COMMON_LIB_DIRS /geode2/soft/hps/sles15/nvidia/21.5/Linux_x86_64/21.5/comm_libs/openmpi/openmpi-3.1.5/lib)
+#   list(APPEND COMMON_LIB_DIRS /usr/local/mpi/lib)
 endif()
 
 if(USE_TRITONSERVER_DATATYPE)
@@ -419,6 +426,7 @@ add_library(transformer-shared SHARED
 if (BUILD_MULTI_GPU)
 target_link_libraries(transformer-shared PUBLIC
   -lmpi
+  ${MPI_CXX_LIBRARIES}
   ${NCCL_LIBRARIES}
 )
 endif()

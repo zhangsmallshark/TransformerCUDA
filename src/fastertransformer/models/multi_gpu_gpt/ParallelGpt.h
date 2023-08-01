@@ -83,7 +83,11 @@ private:
     gptVariantParams gpt_variant_params_;
 
     ParallelGptDecoder<T>*        gpt_decoder_;
+    ParallelGptDecoder<T>*        gpt_decoder1_;
+
     ParallelGptContextDecoder<T>* gpt_context_decoder_;
+    ParallelGptContextDecoder<T>* gpt_context_decoder1_;
+
     DynamicDecodeLayer<float>*    dynamic_decode_layer_;
 
     void allocateBuffer() override;
@@ -121,6 +125,8 @@ protected:
     T*        decoder_input_buf_;
     T*        decoder_normed_input_buf_ = nullptr;
     T*        decoder_output_buf_;
+    T*        decoder_output_buf1_;
+
     T*        normed_decoder_output_buf_;
     float*    logits_buf_;
     float*    nccl_logits_buf_;
@@ -138,6 +144,8 @@ protected:
 
     T*   key_cache_;
     T*   value_cache_;
+    T*   key_cache1_;
+    T*   value_cache1_;
     int* cache_indirections_[2] = {nullptr, nullptr};
 
     int* start_ids_buf_;
@@ -158,6 +166,8 @@ protected:
     T*     context_decoder_input_buf_;
     T*     context_decoder_normed_input_buf_;
     T*     context_decoder_output_buf_;
+    T*     context_decoder_output_buf1_;
+
     float* output_log_probs_buf_;
 
     // The slope per head of an attention linear bias.
@@ -244,6 +254,8 @@ public:
 
     void registerCallback(callback_sig* fn, void* ctx);
     void unRegisterCallback();
+
+    cudaStream_t     stream1_;
 };
 
 }  // namespace fastertransformer

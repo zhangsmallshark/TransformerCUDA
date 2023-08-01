@@ -55,6 +55,30 @@ void ParallelGpt<T>::initialize()
                                                             custom_all_reduce_comm_,
                                                             enable_custom_all_reduce_);
 
+    gpt_context_decoder1_ = new ParallelGptContextDecoder<T>(0,
+                                                            0,
+                                                            head_num_,
+                                                            size_per_head_,
+                                                            inter_size_,
+                                                            num_layer_,
+                                                            expert_num_,
+                                                            moe_k_,
+                                                            moe_layer_index_,
+                                                            layernorm_eps_,
+                                                            gpt_variant_params_,
+                                                            tensor_para_,
+                                                            pipeline_para_,
+                                                            stream1_,
+                                                            cublas_wrapper_,
+                                                            allocator_,
+                                                            is_free_buffer_after_forward_,
+                                                            is_context_qk_buf_float_,
+                                                            attention_type_,
+                                                            sparse_,
+                                                            int8_mode_,
+                                                            custom_all_reduce_comm_,
+                                                            enable_custom_all_reduce_);
+
     gpt_decoder_ = new ParallelGptDecoder<T>(0,
                                              head_num_,
                                              size_per_head_,
@@ -68,6 +92,27 @@ void ParallelGpt<T>::initialize()
                                              tensor_para_,
                                              pipeline_para_,
                                              stream_,
+                                             cublas_wrapper_,
+                                             allocator_,
+                                             is_free_buffer_after_forward_,
+                                             sparse_,
+                                             int8_mode_,
+                                             custom_all_reduce_comm_,
+                                             enable_custom_all_reduce_);
+
+    gpt_decoder1_ = new ParallelGptDecoder<T>(0,
+                                             head_num_,
+                                             size_per_head_,
+                                             inter_size_,
+                                             num_layer_,
+                                             expert_num_,
+                                             moe_k_,
+                                             moe_layer_index_,
+                                             layernorm_eps_,
+                                             gpt_variant_params_,
+                                             tensor_para_,
+                                             pipeline_para_,
+                                             stream1_,
                                              cublas_wrapper_,
                                              allocator_,
                                              is_free_buffer_after_forward_,
@@ -122,6 +167,10 @@ void ParallelGpt<T>::allocateBuffer(size_t batch_size,
         (T*)(allocator_->reMalloc(decoder_normed_input_buf_, sizeof(T) * batchxbeam * hidden_units_, false));
     decoder_output_buf_ =
         (T*)(allocator_->reMalloc(decoder_output_buf_, sizeof(T) * batchxbeam * hidden_units_, false));
+
+    decoder_output_buf1_ =
+        (T*)(allocator_->reMalloc(decoder_output_buf1_, sizeof(T) * batchxbeam * hidden_units_, false));
+
     normed_decoder_output_buf_ =
         (T*)(allocator_->reMalloc(normed_decoder_output_buf_, sizeof(T) * batchxbeam * hidden_units_, false));
     logits_buf_ = (float*)(allocator_->reMalloc(logits_buf_, sizeof(float) * batchxbeam * vocab_size_padded_, false));
@@ -133,6 +182,14 @@ void ParallelGpt<T>::allocateBuffer(size_t batch_size,
 
     key_cache_   = (T*)(allocator_->reMalloc(key_cache_, sizeof(T) * self_cache_size * 2, true));
     value_cache_ = key_cache_ + self_cache_size;
+    if (beam_width > 1) {
+        cache_indirections_[0] =
+            (int*)(allocator_->reMalloc(cache_indirections_[0], sizeof(int) * batchxbeam * memory_len * 2, true));
+        cache_indirections_[1] = cache_indirections_[0] + batchxbeam * memory_len;
+    }
+
+    key_cache1_   = (T*)(allocator_->reMalloc(key_cache1_, sizeof(T) * self_cache_size * 2, true));
+    value_cache1_ = key_cache1_ + self_cache_size;
     if (beam_width > 1) {
         cache_indirections_[0] =
             (int*)(allocator_->reMalloc(cache_indirections_[0], sizeof(int) * batchxbeam * memory_len * 2, true));
@@ -164,6 +221,10 @@ void ParallelGpt<T>::allocateBuffer(size_t batch_size,
         context_decoder_input_buf_, sizeof(T) * batchxbeam * max_input_len * hidden_units_, false));
     context_decoder_output_buf_ = (T*)(allocator_->reMalloc(
         context_decoder_output_buf_, sizeof(T) * batchxbeam * max_input_len * hidden_units_, false));
+
+    context_decoder_output_buf1_ = (T*)(allocator_->reMalloc(
+        context_decoder_output_buf1_, sizeof(T) * batchxbeam * max_input_len * hidden_units_, false));
+
     output_log_probs_buf_ =
         (float*)(allocator_->reMalloc(output_log_probs_buf_, sizeof(float) * batchxbeam * max_session_len, false));
 
@@ -340,6 +401,7 @@ ParallelGpt<T>::ParallelGpt(size_t                              max_batch_size,
     enable_custom_all_reduce_(enable_custom_all_reduce),
     shared_contexts_ratio_(shared_contexts_ratio)
 {
+    cudaStreamCreate(&stream1_);
     int local_vacab_size = ceil(vocab_size_ / 1.f / tensor_para_.world_size_);
     if (std::is_same<half, T>::value
 #ifdef ENABLE_BF16
@@ -1087,8 +1149,22 @@ void ParallelGpt<T>::forward(std::unordered_map<std::string, Tensor>*       outp
                  {"last_token_hidden_units",
                   Tensor(MEMORY_GPU, data_type, {batch_size * beam_width, hidden_units_}, decoder_output_buf_)}});
 
+            TensorMap decoder_output_tensors1(
+                {{"decoder_output",
+                  Tensor(MEMORY_GPU,
+                         data_type,
+                         {batch_size * beam_width, (size_t)max_input_length, hidden_units_},
+                         context_decoder_output_buf1_)},
+                 {"key_cache", Tensor(MEMORY_GPU, data_type, self_k_cache_shape, key_cache1_)},
+                 {"value_cache", Tensor(MEMORY_GPU, data_type, self_v_cache_shape, value_cache1_)},
+                 {"last_token_hidden_units",
+                  Tensor(MEMORY_GPU, data_type, {batch_size * beam_width, hidden_units_}, decoder_output_buf1_)}});
+
             gpt_context_decoder_->forward(
                 &decoder_output_tensors, &decoder_input_tensors, &gpt_weights->decoder_layer_weights);
+
+            gpt_context_decoder1_->forward(
+                &decoder_output_tensors1, &decoder_input_tensors, &gpt_weights->decoder_layer_weights);
 
             if (is_return_context_embeddings) {
                 PUSH_RANGE("context embedding sum length dim");
@@ -1343,8 +1419,21 @@ void ParallelGpt<T>::forward(std::unordered_map<std::string, Tensor>*       outp
                      {"key_cache", Tensor(MEMORY_GPU, data_type, self_k_cache_shape, key_cache_)},
                      {"value_cache", Tensor(MEMORY_GPU, data_type, self_v_cache_shape, value_cache_)}});
 
+                std::unordered_map<std::string, Tensor> decoder_output_tensors1(
+                    {{"decoder_output",
+                      Tensor(MEMORY_GPU,
+                             data_type,
+                             {local_batch_size * beam_width, hidden_units_},
+                             decoder_output_buf_ + hidden_units_offset)},
+                     {"key_cache", Tensor(MEMORY_GPU, data_type, self_k_cache_shape, key_cache_)},
+                     {"value_cache", Tensor(MEMORY_GPU, data_type, self_v_cache_shape, value_cache_)}});
+
                 gpt_decoder_->forward(
                     &decoder_output_tensors, &decoder_input_tensors, &gpt_weights->decoder_layer_weights);
+
+                gpt_decoder1_->forward(
+                    &decoder_output_tensors1, &decoder_input_tensors, &gpt_weights->decoder_layer_weights);
+
             }
 
             if (!fill_caches_only && pipeline_para_.rank_ == pipeline_para_.world_size_ - 1) {
